@@ -1,0 +1,7 @@
+langchain-core
+langchain-groq
+pydantic
+python-dotenv
+tavily-python
+requests
+trafilatura
