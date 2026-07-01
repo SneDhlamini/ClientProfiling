@@ -14,7 +14,8 @@ def main():
     # USER PROMPT
     # ------------------------------------------
 
-    user_prompt = input("Find Companies with sports shoes in China")
+    user_prompt = input("find AI companies in south africa ")
+    print(f"[DEBUG] You searched for: {user_prompt!r}")
 
     # ------------------------------------------
     # INTENT ANALYSIS
