@@ -4,14 +4,15 @@ from company_vault.vault import CompanyVaultManager
 
 from company_discovery.web_worker import WebWorker
 from company_discovery.linkedin_worker import LinkedInWorker
+from company_discovery.wikidata_worker import WikidataWorker
 
 from company_profiling.profiler import CompanyProfiler
 
 
 # ------------------------------------------
-# EDIT THIS LINE to change what you're searching for, then run the script.
+# Put search prompt here.
 # ------------------------------------------
-SEARCH_QUERY = "find AI consulting companies in South Africa"
+SEARCH_QUERY = "I want manufacturing companies in Africa"
 
 
 def main():
@@ -71,7 +72,15 @@ def main():
         vault
     )
 
-    # Later
+    print("\nRunning Wikidata Worker (enrichment)...")
+
+    wikidata_worker = WikidataWorker()
+
+    wikidata_worker.enrich(
+        vault
+    )
+
+    # to add laterr
 
     # registry_worker.discover(...)
     # news_worker.discover(...)
