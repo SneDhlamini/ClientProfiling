@@ -8,13 +8,19 @@ from company_discovery.linkedin_worker import LinkedInWorker
 from company_profiling.profiler import CompanyProfiler
 
 
+# ------------------------------------------
+# EDIT THIS LINE to change what you're searching for, then run the script.
+# ------------------------------------------
+SEARCH_QUERY = "find AI consulting companies in South Africa"
+
+
 def main():
 
     # ------------------------------------------
     # USER PROMPT
     # ------------------------------------------
 
-    user_prompt = input("find AI companies in south africa ")
+    user_prompt = SEARCH_QUERY
     print(f"[DEBUG] You searched for: {user_prompt!r}")
 
     # ------------------------------------------
@@ -28,6 +34,14 @@ def main():
     )
 
     print(search_spec)
+
+    if search_spec.clarification_required:
+        print("\nI need a bit more information before I can search:")
+        for question in search_spec.clarification_questions:
+            print(f"  - {question}")
+        if search_spec.missing_information:
+            print(f"\n(Missing: {', '.join(search_spec.missing_information)})")
+        return
 
     # ------------------------------------------
     # CREATE COMPANY VAULT
