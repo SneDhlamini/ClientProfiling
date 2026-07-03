@@ -1,3 +1,4 @@
+from company_vault import vault
 from prompt.prompt import analyze_intent
 
 from company_vault.vault import CompanyVaultManager
@@ -9,13 +10,17 @@ from company_discovery.wikidata_worker import WikidataWorker
 from company_profiling.profiler import CompanyProfiler
 
 
+from client_scoring.scorer import ClientScorer
+from client_scoring.dashboard import DashboardGenerator
+
 # ------------------------------------------
 # Put search prompt here.
 # ------------------------------------------
-SEARCH_QUERY = "I want manufacturing companies in Africa"
+SEARCH_QUERY = "I want consulting companies that have been in business for at least 10 years founded by Africans. they should be profitable and have sales of over 40millon dollars"
 
 
 def main():
+
 
     # ------------------------------------------
     # USER PROMPT
@@ -90,7 +95,7 @@ def main():
 
     vault.summary()
 
-    # ------------------------------------------
+        # ------------------------------------------
     # COMPANY PROFILING
     # ------------------------------------------
 
@@ -104,6 +109,113 @@ def main():
             vault
         )
 
+    # ------------------------------------------
+    # CLIENT SCORING
+    # ------------------------------------------
+
+    print("\nScoring companies...\n")
+
+    scorer = ClientScorer()
+
+    scored_companies = scorer.score_all(
+        vault,
+        search_spec
+    )
+
+    # ------------------------------------------
+    # DASHBOARD
+    # ------------------------------------------
+
+    print("\nGenerating dashboard...\n")
+
+    dashboard = DashboardGenerator()
+
+    dashboard_path = dashboard.generate(
+        scored_companies,
+        search_spec
+    )
+
+    print(f"Dashboard generated: {dashboard_path}")    # ------------------------------------------
+    # COMPANY PROFILING
+    # ------------------------------------------
+
+    print("\nProfiling companies...\n")
+
+    profiler = CompanyProfiler()
+
+    for company in vault.get_all_companies():
+        profiler.profile(
+            company,
+            vault
+        )
+
+    # ------------------------------------------
+    # CLIENT SCORING
+    # ------------------------------------------
+
+    print("\nScoring companies...\n")
+
+    scorer = ClientScorer()
+
+    scored_companies = scorer.score_all(
+        vault,
+        search_spec
+    )
+
+    # ------------------------------------------
+    # DASHBOARD
+    # ------------------------------------------
+
+    print("\nGenerating dashboard...\n")
+
+    dashboard = DashboardGenerator()
+
+    dashboard_path = dashboard.generate(
+        scored_companies,
+        search_spec
+    )
+
+    print(f"Dashboard generated: {dashboard_path}")    # ------------------------------------------
+    # COMPANY PROFILING
+    # ------------------------------------------
+
+    print("\nProfiling companies...\n")
+
+    profiler = CompanyProfiler()
+
+    for company in vault.get_all_companies():
+        profiler.profile(
+            company,
+            vault
+        )
+
+    # ------------------------------------------
+    # CLIENT SCORING
+    # ------------------------------------------
+
+    print("\nScoring companies...\n")
+
+    scorer = ClientScorer()
+
+    scored_companies = scorer.score_all(
+        vault,
+        search_spec
+    )
+
+    # ------------------------------------------
+    # DASHBOARD
+    # ------------------------------------------
+
+    print("\nGenerating dashboard...\n")
+
+    dashboard = DashboardGenerator()
+
+    dashboard_path = dashboard.generate(
+        scored_companies,
+        search_spec
+    )
+
+    print(f"Dashboard generated: {dashboard_path}")
     # ------------------------------------------
     # OUTPUT
     # ------------------------------------------
@@ -131,3 +243,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
