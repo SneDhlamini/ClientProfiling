@@ -126,6 +126,5 @@ class CompanyProfiler:
                  CONTENT: {evidence.content}
                  """
                 )
-              
 
-              return "\n".join(sections)    
+       return "\n".join(sections)

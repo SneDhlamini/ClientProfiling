@@ -1,4 +1,3 @@
-from company_vault import vault
 from prompt.prompt import analyze_intent
 
 from company_vault.vault import CompanyVaultManager
@@ -9,18 +8,15 @@ from company_discovery.wikidata_worker import WikidataWorker
 
 from company_profiling.profiler import CompanyProfiler
 
-
 from client_scoring.scorer import ClientScorer
 from client_scoring.dashboard import DashboardGenerator
 
 # ------------------------------------------
-# Put search prompt here.
+# EDIT THIS LINE to change what you're searching for, then run the script.
 # ------------------------------------------
-SEARCH_QUERY = "I want consulting companies that have been in business for at least 10 years founded by Africans. they should be profitable and have sales of over 40millon dollars"
-
+SEARCH_QUERY = "high ranking companies in Auditing in Africa"
 
 def main():
-
 
     # ------------------------------------------
     # USER PROMPT
@@ -85,7 +81,7 @@ def main():
         vault
     )
 
-    # to add laterr
+    # Later
 
     # registry_worker.discover(...)
     # news_worker.discover(...)
@@ -95,8 +91,8 @@ def main():
 
     vault.summary()
 
-        # ------------------------------------------
-    # COMPANY PROFILING
+    # ------------------------------------------
+    # COMPANY PROFILING (AI - structured facts)
     # ------------------------------------------
 
     print("\nProfiling companies...\n")
@@ -104,144 +100,33 @@ def main():
     profiler = CompanyProfiler()
 
     for company in vault.get_all_companies():
-        profiler.profile(
-            company,
-            vault
-        )
+        try:
+            profiler.profile(company, vault)
+        except Exception as e:
+            print(f"Profiling error for {company.identity.name}: {e}")
 
     # ------------------------------------------
-    # CLIENT SCORING
+    # CLIENT SCORING (deterministic, no AI)
     # ------------------------------------------
 
-    print("\nScoring companies...\n")
+    print("\nScoring companies against the search prompt...\n")
 
     scorer = ClientScorer()
+    ranked_companies = scorer.score_all(vault, search_spec)
 
-    scored_companies = scorer.score_all(
-        vault,
-        search_spec
-    )
+    for company, score, breakdown in ranked_companies:
+        print(f"  {round(score * 100):>3}%  {company.identity.name}")
 
-    # ------------------------------------------
-    # DASHBOARD
-    # ------------------------------------------
-
-    print("\nGenerating dashboard...\n")
-
-    dashboard = DashboardGenerator()
-
-    dashboard_path = dashboard.generate(
-        scored_companies,
-        search_spec
-    )
-
-    print(f"Dashboard generated: {dashboard_path}")    # ------------------------------------------
-    # COMPANY PROFILING
-    # ------------------------------------------
-
-    print("\nProfiling companies...\n")
-
-    profiler = CompanyProfiler()
-
-    for company in vault.get_all_companies():
-        profiler.profile(
-            company,
-            vault
-        )
-
-    # ------------------------------------------
-    # CLIENT SCORING
-    # ------------------------------------------
-
-    print("\nScoring companies...\n")
-
-    scorer = ClientScorer()
-
-    scored_companies = scorer.score_all(
-        vault,
-        search_spec
-    )
-
-    # ------------------------------------------
-    # DASHBOARD
-    # ------------------------------------------
-
-    print("\nGenerating dashboard...\n")
-
-    dashboard = DashboardGenerator()
-
-    dashboard_path = dashboard.generate(
-        scored_companies,
-        search_spec
-    )
-
-    print(f"Dashboard generated: {dashboard_path}")    # ------------------------------------------
-    # COMPANY PROFILING
-    # ------------------------------------------
-
-    print("\nProfiling companies...\n")
-
-    profiler = CompanyProfiler()
-
-    for company in vault.get_all_companies():
-        profiler.profile(
-            company,
-            vault
-        )
-
-    # ------------------------------------------
-    # CLIENT SCORING
-    # ------------------------------------------
-
-    print("\nScoring companies...\n")
-
-    scorer = ClientScorer()
-
-    scored_companies = scorer.score_all(
-        vault,
-        search_spec
-    )
-
-    # ------------------------------------------
-    # DASHBOARD
-    # ------------------------------------------
-
-    print("\nGenerating dashboard...\n")
-
-    dashboard = DashboardGenerator()
-
-    dashboard_path = dashboard.generate(
-        scored_companies,
-        search_spec
-    )
-
-    print(f"Dashboard generated: {dashboard_path}")
     # ------------------------------------------
     # OUTPUT
     # ------------------------------------------
 
-    print("\n\n================ COMPANY PROFILES ================\n")
+    dashboard_generator = DashboardGenerator()
+    dashboard_path = dashboard_generator.generate(ranked_companies, search_spec)
 
-    for company in vault.get_all_companies():
-
-        print("=" * 80)
-
-        print(f"Company: {company.identity.name}")
-
-        print(f"Website: {company.identity.website}")
-
-        print("\nFACTS")
-
-        print(company.facts)
-
-        print("\nSEMANTIC PROFILE")
-
-        print(company.semantic_profile)
-
-        print("=" * 80)
+    print(f"\nDashboard written to: {dashboard_path}")
+    print("Open it in your browser to view the interactive results.")
 
 
 if __name__ == "__main__":
     main()
-
-

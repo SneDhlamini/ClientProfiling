@@ -277,7 +277,7 @@ class LinkedInWorker:
                     fields[field_name] = value[:1000]  # keep it sane
         return fields
 
-
+#testingggggg
 if __name__ == "__main__":
     search_spec = SearchSpecification(
         intent="Company Discovery",

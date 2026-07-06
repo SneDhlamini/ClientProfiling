@@ -1,257 +1,151 @@
-from __future__ import annotations
+"""
 
-from typing import List, Dict
+
+Deterministic (no-LLM) scoring of every company in the vault against the
+original SearchSpecification. This runs AFTER discovery + profiling, so
+every company already has raw_evidence, facts and a semantic_profile to
+score against.
+
+The score is a 0.0-1.0 float built from four weighted components:
+
+    constraint_match        - do the user's constraints actually show up
+                               in this company's facts?
+    attribute_completeness  - how many of the required_attributes were we
+                               able to fill in?
+    semantic_depth          - how much of the semantic_profile could the
+                               LLM confidently fill in?
+    evidence_richness       - how many sources of evidence records do we
+                               have ?
+No LLM,it's pure Python so it's fast, free, and
+reproducible. The LLM-based "why this company was selected" explanation
+lives in client_scoring/dashboard.py, which is free to use this score's
+breakdown as grounding for that explanation.
+"""
 
 from models.schemas import SearchSpecification, CompanyProfile
 from company_vault.vault import CompanyVaultManager
 
+WEIGHTS = {
+    "constraint_match": 0.40,
+    "attribute_completeness": 0.30,
+    "semantic_depth": 0.15,
+    "evidence_richness": 0.15,
+}
+
 
 class ClientScorer:
-    """
-    Scores every company in the CompanyVault against the user's
-    SearchSpecification.
-
-    This class never calls an LLM or external APIs.
-    It only consumes the information already collected during
-    discovery and profiling.
-    """
-
-    def __init__(
-        self,
-        business_weight: float = 0.35,
-        semantic_weight: float = 0.30,
-        evidence_weight: float = 0.20,
-        technology_weight: float = 0.15,
-    ):
-
-        self.business_weight = business_weight
-        self.semantic_weight = semantic_weight
-        self.evidence_weight = evidence_weight
-        self.technology_weight = technology_weight
-
-    # -------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------
-
-    def score_all(
-        self,
-        vault: CompanyVaultManager,
-        search_spec: SearchSpecification,
-    ) -> List[Dict]:
-
-        scored = []
-
+    def score_all(self, vault: CompanyVaultManager, search_spec: SearchSpecification):
+        """
+        Scores every company in the vault and returns a list of
+        (company, score, breakdown) tuples sorted highest-score first.
+        """
+        results = []
         for company in vault.get_all_companies():
+            score, breakdown = self.score_company(company, search_spec)
+            results.append((company, score, breakdown))
 
-            result = self.score_company(
-                company,
-                search_spec
-            )
+        results.sort(key=lambda item: item[1], reverse=True)
+        return results
 
-            scored.append(result)
+    def score_company(self, company: CompanyProfile, search_spec: SearchSpecification):
+        constraint_score, matched_constraints = self._score_constraints(company, search_spec)
+        attribute_score, matched_attributes, missing_attributes = self._score_attributes(company, search_spec)
+        semantic_score, filled_semantic_fields = self._score_semantic_depth(company)
+        evidence_score, evidence_count = self._score_evidence_richness(company)
 
-        scored.sort(
-            key=lambda x: x["final_score"],
-            reverse=True
+        total = (
+            constraint_score * WEIGHTS["constraint_match"]
+            + attribute_score * WEIGHTS["attribute_completeness"]
+            + semantic_score * WEIGHTS["semantic_depth"]
+            + evidence_score * WEIGHTS["evidence_richness"]
         )
+        total = round(min(max(total, 0.0), 1.0), 4)
 
-        return scored
-
-    def score_company(
-        self,
-        company: CompanyProfile,
-        search_spec: SearchSpecification,
-    ) -> Dict:
-
-        business = self.calculate_business_score(
-            company,
-            search_spec
-        )
-
-        semantic = self.calculate_semantic_score(
-            company,
-            search_spec
-        )
-
-        technology = self.calculate_technology_score(
-            company,
-            search_spec
-        )
-
-        evidence = self.calculate_evidence_score(
-            company
-        )
-
-        final = self.calculate_final_score(
-            business,
-            semantic,
-            technology,
-            evidence
-        )
-
-        return {
-            "company": company,
-            "business_score": business,
-            "semantic_score": semantic,
-            "technology_score": technology,
-            "evidence_score": evidence,
-            "final_score": final,
-            "explanation": self.generate_explanation(
-                company,
-                business,
-                semantic,
-                technology,
-                evidence,
-                final,
-            )
+        breakdown = {
+            "constraint_match": round(constraint_score, 4),
+            "matched_constraints": matched_constraints,
+            "attribute_completeness": round(attribute_score, 4),
+            "matched_attributes": matched_attributes,
+            "missing_attributes": missing_attributes,
+            "semantic_depth": round(semantic_score, 4),
+            "filled_semantic_fields": filled_semantic_fields,
+            "evidence_richness": round(evidence_score, 4),
+            "evidence_count": evidence_count,
         }
+        return total, breakdown
 
-    # -------------------------------------------------------
-    # Individual Scores
-    # -------------------------------------------------------
+    # ------------------------------------------------------------------
+    # constraint_match
+    # ------------------------------------------------------------------
+    def _score_constraints(self, company: CompanyProfile, search_spec: SearchSpecification):
+        constraints = search_spec.constraints or {}
+        if not constraints:
+            # Nothing to match against -> don't cancel the company for it.
+            return 1.0, []
 
-    def calculate_business_score(
-        self,
-        company: CompanyProfile,
-        search_spec: SearchSpecification,
-    ) -> float:
+        haystack = self._company_text_blob(company).lower()
 
-        score = 0
+        matched = []
+        for key, value in constraints.items():
+            if value and value.lower() in haystack:
+                matched.append(key)
 
-        if company.facts.industry:
+        return len(matched) / len(constraints), matched
 
-            if company.facts.industry.lower() in search_spec.discovery_prompt.lower():
-                score += 40
+    # ------------------------------------------------------------------
+    # attribute_completeness
+    # ------------------------------------------------------------------
+    def _score_attributes(self, company: CompanyProfile, search_spec: SearchSpecification):
+        required = search_spec.required_attributes or []
+        if not required:
+            return 1.0, [], []
 
-        if company.facts.services:
-            score += min(len(company.facts.services) * 5, 30)
+        facts = company.facts
+        matched, missing = [], []
+        for attr in required:
+            field_name = attr.strip().lower().replace(" ", "_")
+            value = getattr(facts, field_name, None)
+            if value:
+                matched.append(attr)
+            else:
+                missing.append(attr)
 
-        if company.facts.products:
-            score += min(len(company.facts.products) * 3, 20)
+        return len(matched) / len(required), matched, missing
 
-        if company.identity.website:
-            score += 10
+    # ------------------------------------------------------------------
+    # semantic_depth
+    # ------------------------------------------------------------------
+    def _score_semantic_depth(self, company: CompanyProfile):
+        profile_dict = company.semantic_profile.model_dump()
+        filled = [k for k, v in profile_dict.items() if v]
+        total_fields = len(profile_dict) or 1
+        return len(filled) / total_fields, filled
 
-        return min(score, 100)
+    # ------------------------------------------------------------------
+    # evidence_richness
+    # ------------------------------------------------------------------
+    def _score_evidence_richness(self, company: CompanyProfile):
+        count = len(company.raw_evidence)
+        # 5+ independent evidence records = full score, scales linearly below that
+        return min(count / 5, 1.0), count
 
-    def calculate_semantic_score(
-        self,
-        company: CompanyProfile,
-        search_spec: SearchSpecification,
-    ) -> float:
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+    def _company_text_blob(self, company: CompanyProfile) -> str:
+        parts = [company.identity.name, company.identity.website or ""]
 
-        score = 0
+        facts = company.facts
+        parts.append(facts.industry or "")
+        parts.append(facts.headquarters or "")
+        parts.append(facts.business_model or "")
+        parts.extend(facts.countries)
+        parts.extend(facts.products)
+        parts.extend(facts.services)
+        parts.extend(facts.technologies)
+        parts.extend(facts.current_clients)
 
-        profile = company.semantic_profile
+        for evidence in company.raw_evidence:
+            parts.append(evidence.content)
 
-        if profile.ai_readiness:
-            score += 20
-
-        if profile.innovation_level:
-            score += 20
-
-        if profile.partnership_potential:
-            score += 20
-
-        if profile.ai_opportunities:
-            score += min(
-                len(profile.ai_opportunities) * 8,
-                20
-            )
-
-        if profile.strategic_priorities:
-            score += 20
-
-        return min(score, 100)
-
-    def calculate_technology_score(
-        self,
-        company: CompanyProfile,
-        search_spec: SearchSpecification,
-    ) -> float:
-
-        technologies = company.facts.technologies
-
-        if not technologies:
-            return 0
-
-        return min(
-            len(technologies) * 15,
-            100
-        )
-
-    def calculate_evidence_score(
-        self,
-        company: CompanyProfile,
-    ) -> float:
-
-        evidence = company.raw_evidence
-
-        if not evidence:
-            return 0
-
-        confidence = sum(
-            item.confidence
-            for item in evidence
-        )
-
-        confidence /= len(evidence)
-
-        quantity_bonus = min(
-            len(evidence),
-            20
-        ) * 2
-
-        return min(
-            confidence * 60 + quantity_bonus,
-            100
-        )
-
-    # -------------------------------------------------------
-    # Final Score
-    # -------------------------------------------------------
-
-    def calculate_final_score(
-        self,
-        business: float,
-        semantic: float,
-        technology: float,
-        evidence: float,
-    ) -> float:
-
-        final = (
-
-            business * self.business_weight
-
-            + semantic * self.semantic_weight
-
-            + technology * self.technology_weight
-
-            + evidence * self.evidence_weight
-
-        )
-
-        return round(final, 2)
-
-    # -------------------------------------------------------
-    # Explanation
-    # -------------------------------------------------------
-
-    def generate_explanation(
-        self,
-        company: CompanyProfile,
-        business: float,
-        semantic: float,
-        technology: float,
-        evidence: float,
-        final: float,
-    ) -> str:
-
-        return (
-            f"{company.identity.name} achieved an overall score of "
-            f"{final:.1f}/100.\n\n"
-            f"Business Match: {business:.1f}\n"
-            f"Semantic Match: {semantic:.1f}\n"
-            f"Technology Match: {technology:.1f}\n"
-            f"Evidence Quality: {evidence:.1f}"
-        )
+        return " \n ".join(parts)

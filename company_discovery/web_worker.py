@@ -5,28 +5,50 @@ from company_vault.vault import CompanyVaultManager
 import requests
 import trafilatura
 import time
+import re
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os
 from dotenv import load_dotenv
 from tavily import TavilyClient
 
-# Section pages we try to find and read for each company, beyond the homepage.
-SECTION_KEYWORDS = ["about", "contact", "careers", "products", "services"]
+# Section pages beyond the homepage.
+SECTION_KEYWORDS = ["about",
+                    "about-us",
+                     "contact",
+                     "contact-us",
+                     "careers", 
+                     "products", 
+                     "services",
+                     "solutions",
+                     ]
 
-# Domains that are never the "official website" - they're social/profile
-# pages or data aggregators, not a company's own site. LinkedIn especially
-# is already handled by LinkedInWorker, so WebWorker should skip past it
-# rather than resolve "official website" to a LinkedIn company page.
-EXCLUDED_WEBSITE_DOMAINS = [
+# To catch cases where the url isnt actually an official website
+NEVER_OFFICIAL_DOMAINS = [
     "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com",
     "zoominfo.com", "leadiq.com", "globaldata.com", "wikipedia.org",
+    "crunchbase.com", "owler.com", "dnb.com", "bloomberg.com", "craft.co",
+    "rocketreach.co", "apollo.io", "weforum.org", "africanfinancials.com",
+    "jimdosite.com", "wixsite.com", "weebly.com", "blogspot.com",
+    "wordpress.com", "squarespace.com", "godaddysites.com",
+    "sites.google.com", "medium.com",
 ]
 
-# How many companies to process at once, and how many page-fetches per
-# company to run at once. Total concurrent network calls is roughly the
-# product of the two - keep it moderate to avoid tripping Tavily or
-# individual company sites' rate limits.
+# stop deduplication:Legal-entity suffix words stripped out
+
+COMPANY_SUFFIX_WORDS = {
+    "inc", "incorporated", "ltd", "limited", "llc", "plc", "corp",
+    "corporation", "co", "company", "group", "holdings", "international",
+    "industries", "enterprises", "gmbh", "sa", "ag", "kg",
+}
+
+# Minimum name/domain token overlap (0.0-1.0) to accept a candidate as
+# plausibly the company's own site, rather than a third party that just
+# happens to mention them.
+MIN_NAME_SIMILARITY = 0.3
+
+# How many companies to process at once, and how many page-fetches per company. Too many concurrent fetches can trigger anti-bot measures
 MAX_COMPANY_WORKERS = 5
 MAX_PAGE_WORKERS = 6
 
@@ -60,9 +82,8 @@ class WebWorker:
         companies = self.extract_candidate_companies(results, search_spec)
         print(f"Web worker extracted {len(companies)} candidate companies: {companies}")
 
-        # Process companies concurrently instead of one at a time - this is
-        # the single biggest speedup, since each company's work is almost
-        # entirely waiting on network I/O.
+        # Process companies concurrently instead of one at a time 
+        
         with ThreadPoolExecutor(max_workers=MAX_COMPANY_WORKERS) as executor:
             futures = {
                 executor.submit(self._process_company, name, vault): name
@@ -80,7 +101,7 @@ class WebWorker:
     def _process_company(self, company_name: str, vault: CompanyVaultManager):
         website = self._find_company_website(company_name)
         if not website:
-            print(f"Could not resolve website for {company_name}, skipping.")
+            print(f"Could not resolve a valid website for {company_name}, skipping.")
             return
 
         print(f"  -> {company_name} ({website})")
@@ -107,9 +128,9 @@ class WebWorker:
         )
         return response.get("results", [])
 
-    # ------------------------------------------------------------------
+    
     # Company name extraction (LLM-based, from Tavily article results)
-    # ------------------------------------------------------------------
+    
     def extract_candidate_companies(self, results, search_spec: SearchSpecification):
         """
         Uses the LLM to extract actual company names from Tavily search results.
@@ -153,9 +174,9 @@ Search Results:
         ]
         return companies
 
-    # ------------------------------------------------------------------
-    # Official website resolution (one Tavily search per company)
-    # ------------------------------------------------------------------
+    # Official website resolution
+    # No extra
+    # Tavily calls - same single search as before, just used better.
     def _find_company_website(self, company_name: str) -> str | None:
         try:
             response = self.tavily.search(
@@ -164,21 +185,99 @@ Search Results:
                 max_results=5,
             )
             results = response.get("results", [])
-            for result in results:
-                url = result.get("url", "")
-                if not url:
-                    continue
-                if any(domain in url.lower() for domain in EXCLUDED_WEBSITE_DOMAINS):
-                    continue
-                return url
-            return None
         except Exception as e:
             print(f"Could not resolve website for {company_name}: {e}")
             return None
 
+        name_tokens = self._normalize_name_tokens(company_name)
+        acronym = self._extract_acronym(company_name)
+        candidates = []
+
+        for result in results:
+            url = result.get("url", "")
+            if not url:
+                continue
+
+            domain = self._get_domain(url)
+            if any(blocked in domain for blocked in NEVER_OFFICIAL_DOMAINS):
+                continue
+
+            label = self._domain_label(url)
+
+            # Exact/near-exact acronym match  is
+            # a very strong signal even when the full name barely
+            # overlaps with the domain - treat it as a top candidate.
+            if acronym and (label == acronym or label.startswith(acronym)):
+                similarity = 1.0
+            else:
+                matched = sum(1 for token in name_tokens if token in label)
+                similarity = matched / max(len(name_tokens), 1)
+
+            candidates.append((similarity, url))
+
+        # Highest name-similarity first; original Tavily order preserved
+        # as a tiebreaker since candidates were appended in that order.
+        candidates.sort(key=lambda c: c[0], reverse=True)
+
+        for similarity, url in candidates:
+            if similarity < MIN_NAME_SIMILARITY:
+                continue
+            if self._domain_is_reachable(url):
+                return url
+
+        return None
+
+    def _normalize_name_tokens(self, name: str) -> set[str]:
+        words = re.findall(r"[a-zA-Z]+", name.lower())
+        return {w for w in words if w not in COMPANY_SUFFIX_WORDS and len(w) > 1}
+
+    def _extract_acronym(self, name: str) -> str | None:
+        """
+        Pulls a parenthetical acronym out of a company name.
+        """
+        match = re.search(r"\(([A-Za-z]{2,6})\)", name)
+        return match.group(1).lower() if match else None
+
+    def _domain_label(self, url: str) -> str:
+        """
+        Returns the registrable domain's first label with all
+        non-letter characters stripped, e.g. "dangote-cement.jimdosite.com"
+        -> "dangotecement". Stripping hyphens/digits means both
+        hyphenated and concatenated domain naming styles (tigerbrands.com
+        vs dangote-cement.com) are matched the same way, via substring
+        containment rather than exact token equality.
+        """
+        try:
+            netloc = urlparse(url).netloc.lower().replace("www.", "")
+            label = netloc.split(".")[0]
+            return re.sub(r"[^a-z]", "", label)
+        except Exception:
+            return ""
+
+    def _get_domain(self, url: str) -> str:
+        try:
+            return urlparse(url).netloc.lower()
+        except Exception:
+            return ""
+
+    def _domain_is_reachable(self, url: str) -> bool:
+        try:
+            resp = requests.head(url, timeout=5, allow_redirects=True, headers=BROWSER_HEADERS)
+            return resp.status_code < 400
+        except Exception:
+            try:
+                # Some sites reject HEAD requests outright - fall back to
+                # a light GET rather than discarding a real candidate.
+                resp = requests.get(url, timeout=6, headers=BROWSER_HEADERS, stream=True)
+                resp.close()
+                return resp.status_code < 400
+            except Exception:
+                return False
+
     # ------------------------------------------------------------------
-    # Evidence collection: homepage + section pages (about, contact, etc.)
-    # Fetched concurrently instead of one at a time.
+    # Evidence collection: homepage first (synchronously, so we can
+    # verify it and compute a confidence score before anything else),
+    # then section pages (about, contact, etc.) concurrently.
     # ------------------------------------------------------------------
     def _collect_company_evidence(
         self,
@@ -186,15 +285,36 @@ Search Results:
         website: str,
         vault: CompanyVaultManager,
     ):
-        tasks = [("home", website)]
-        tasks += [(section, None) for section in SECTION_KEYWORDS]
+        home_content = self.read_page(website)
+        if not home_content:
+            print(f"Could not read homepage for {company_name} ({website}), skipping.")
+            return
+
+        confidence = self._verify_official_match(company_name, home_content)
+        if confidence < 0.5:
+            print(
+                f"  Warning: homepage for {company_name} ({website}) doesn't clearly "
+                f"mention the company name - keeping evidence at reduced confidence ({confidence})."
+            )
+
+        vault.add_evidence(
+            company_name,
+            RawEvidence(
+                source="WebWorker",
+                source_type="website",
+                url=website,
+                title="Home",
+                metadata={"section": "home"},
+                content=home_content,
+                confidence=confidence,
+            ),
+        )
 
         with ThreadPoolExecutor(max_workers=MAX_PAGE_WORKERS) as executor:
-            futures = {}
-            for section, known_url in tasks:
-                futures[executor.submit(
-                    self._fetch_section, company_name, website, section, known_url
-                )] = section
+            futures = {
+                executor.submit(self._fetch_section, company_name, website, section): section
+                for section in SECTION_KEYWORDS
+            }
 
             for future in as_completed(futures):
                 section = futures[future]
@@ -214,19 +334,41 @@ Search Results:
                         source="WebWorker",
                         source_type="website",
                         url=section_url,
-                        title=section.capitalize() if section != "home" else "Home",
+                        title=section.capitalize(),
                         metadata={"section": section},
                         content=content,
+                        confidence=confidence,
                     ),
                 )
 
-    def _fetch_section(self, company_name, website, section, known_url):
+    def _verify_official_match(self, company_name: str, page_text: str) -> float:
         """
-        Resolves the URL for one section (if not already known, i.e. the
-        homepage) and reads it. Returns (url, content) or None if nothing
-        usable was found. Designed to be run inside a thread pool.
+        Loose check that the fetched homepage is actually about this
+        company, since even a reachable, name-similar domain could
+        still be wrong. Doesn't discard the evidence either way.
         """
-        url = known_url or self._find_section_url(website, company_name, section)
+        name_tokens = self._normalize_name_tokens(company_name)
+        if not name_tokens:
+            return 0.7
+
+        text_lower = page_text[:3000].lower()
+        matched = sum(1 for token in name_tokens if token in text_lower)
+        ratio = matched / len(name_tokens)
+
+        if ratio >= 0.5:
+            return 1.0
+        elif ratio > 0:
+            return 0.6
+        else:
+            return 0.3
+
+    def _fetch_section(self, company_name, website, section):
+        """
+        Resolves the URL for one section and reads it. Returns
+        (url, content) or None if nothing usable was found. Designed to
+        be run inside a thread pool.
+        """
+        url = self._find_section_url(website, company_name, section)
         if not url:
             return None
 
@@ -275,15 +417,8 @@ Search Results:
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Page reading - direct fetch + trafilatura extraction.
-    #
-    # No third-party reader/proxy service involved (previously used Jina
-    # Reader, which shares its rate limit across everyone using it
-    # unauthenticated, and outright refuses certain domains like LinkedIn
-    # with HTTP 451). Reading pages ourselves means the only limits we
-    # hit are each individual site's own, which is far more predictable.
-    # ------------------------------------------------------------------
+    # Page reading:direct fetch + trafilatura extraction.
+
     def read_page(self, url: str) -> str | None:
         for attempt in range(1, READ_MAX_ATTEMPTS + 1):
             try:
@@ -305,7 +440,7 @@ Search Results:
         return None
 
 
-# testing
+# testinggggg
 if __name__ == "__main__":
 
     search_spec = SearchSpecification(
@@ -331,6 +466,6 @@ if __name__ == "__main__":
         print(f"Website: {company.identity.website}")
         print("\nContent:")
         for evidence in company.raw_evidence:
-            print(f"--- {evidence.title} ({evidence.url}) ---")
+            print(f"--- {evidence.title} ({evidence.url}) [confidence: {evidence.confidence}] ---")
             print(evidence.content)
         print("=" * 80)
