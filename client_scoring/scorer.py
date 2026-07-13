@@ -2,9 +2,7 @@
 
 
 Deterministic (no-LLM) scoring of every company in the vault against the
-original SearchSpecification. This runs AFTER discovery + profiling, so
-every company already has raw_evidence, facts and a semantic_profile to
-score against.
+original SearchSpecification.
 
 The score is a 0.0-1.0 float built from four weighted components:
 
@@ -26,10 +24,10 @@ from models.schemas import SearchSpecification, CompanyProfile
 from company_vault.vault import CompanyVaultManager
 
 WEIGHTS = {
-    "constraint_match": 0.40,
-    "attribute_completeness": 0.30,
-    "semantic_depth": 0.15,
-    "evidence_richness": 0.15,
+    "constraint_match": 0.50,
+    "attribute_completeness": 0.20,
+    "semantic_depth": 0.20,
+    "evidence_richness": 0.10,
 }
 
 
