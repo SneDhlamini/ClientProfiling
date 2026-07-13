@@ -1,15 +1,3 @@
-"""
-Each company card shows:
-  - name + clickable website
-  - match score (from ClientScorer, deterministic)
-  - a short "Why this company was selected" explanation, written by an
-    LLM that is grounded ONLY in that company's extracted facts,
-    semantic profile and the score breakdown - it is explicitly told not
-    to invent anything not present in that data.
-  - expandable facts / semantic profile / evidence source list
-
-
-"""
 
 import os
 import html
